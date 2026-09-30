@@ -150,20 +150,20 @@ func TestFormatIssueMetadata_CreatedByLabel(t *testing.T) {
 // Created/Started/Updated are stored in UTC. Printing those digits as a bare
 // date put the whole day wrong if it's already tomorrow in UTC.
 //
-// time.Local is swapped rather than TZ, because the zone is resolved once per
-// process and a t.Setenv would land too late to matter — and on a UTC CI box
-// the assertion would then pass without testing anything. That swap is a
-// process-global write, so this test must not be t.Parallel() and will trip
-// -race against any parallel test that reads time.Local.
+// The stamp is handed over in a zone twelve hours ahead of time.Local, so its
+// own digits fall on the next day on any machine, a UTC CI box included, and
+// only a conversion to local time prints the right date. time.Local is never
+// assigned: every time.Now() in the process reads it, including in goroutines
+// no test can synchronize with (a served connection winding down after its
+// test, the collector Dolt starts at package init), so a swap trips -race even
+// with this test run alone.
 func TestFormatIssueMetadata_TimestampsRenderLocal(t *testing.T) {
-	pacific := time.FixedZone("PDT", -7*60*60)
-	orig := time.Local
-	time.Local = pacific
-	t.Cleanup(func() { time.Local = orig })
-
-	// 2026-08-24 01:30 UTC is 2026-08-23 18:30 Pacific — the same instant on
-	// two different calendar days, which is the whole bug.
-	stamp := time.Date(2026, 8, 24, 1, 30, 0, 0, time.UTC)
+	t.Parallel()
+	// 18:30 on 2026-08-23 here is 06:30 on 2026-08-24 twelve hours east — the
+	// same instant on two different calendar days, which is the whole bug.
+	local := time.Date(2026, 8, 23, 18, 30, 0, 0, time.Local)
+	_, offset := local.Zone()
+	stamp := local.In(time.FixedZone("local+12h", offset+12*60*60))
 	issue := &types.Issue{
 		ID: "test-tz", Title: "t", IssueType: types.TypeTask,
 		CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp,
@@ -172,7 +172,7 @@ func TestFormatIssueMetadata_TimestampsRenderLocal(t *testing.T) {
 	out := ansi.Strip(formatIssueMetadata(issue))
 	for _, want := range []string{"Created: 2026-08-23", "Started: 2026-08-23", "Updated: 2026-08-23"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("expected %q in output (UTC digits rendered as-is put the date a day ahead), got:\n%s", want, out)
+			t.Errorf("expected %q in output (the stamp's own digits put the date a day ahead), got:\n%s", want, out)
 		}
 	}
 }
